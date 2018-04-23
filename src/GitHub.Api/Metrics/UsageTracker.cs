@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -48,6 +49,39 @@ namespace GitHub.Unity
                     if (json != null)
                     {
                         result = SimpleJson.DeserializeObject<UsageStore>(json);
+
+                        if (result.Model.Reports.Any(usage => usage.Dimensions.Date == DateTime.MinValue))
+                        {
+                            Logger.Trace("Legacy usage data migration");
+                            
+                            var legacyData = SimpleJson.DeserializeObject(json) as JsonObject;
+                            var model = legacyData?["Model"] as JsonObject;
+                            var reports = model?["Reports"] as JsonArray;
+                            if (reports != null)
+                            {
+                                result.Model.Reports = reports.Cast<JsonObject>().Select(report => {
+                                    var usage = new Usage {
+                                        Dimensions = {
+                                            Guid = (string)report["Guid"],
+                                            AppVersion = (string)report["AppVersion"],
+                                            UnityVersion = (string)report["UnityVersion"],
+                                            Lang = (string)report["Lang"],
+                                            Date = DateTime.Parse((string)report["Date"]).ToUniversalTime()
+                                        },
+                                        Measures = {
+                                            NumberOfStartups = int.Parse(report["NumberOfStartups"].ToString())
+                                        }
+                                    };
+                                    return usage;
+                                }).ToList();
+                            }
+                            else
+                            {
+                                throw new InvalidOperationException("Error migrating usage data");
+                            }
+
+                            SaveUsage(result);
+                        }
                     }
                 }
                 catch (Exception ex)
