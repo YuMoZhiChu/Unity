@@ -36,7 +36,7 @@
 
 // NOTE: uncomment the following line to disable linq expressions/compiled lambda (better performance) instead of method.invoke().
 // define if you are using .net framework <= 3.0 or < WP7.5
-//#define SIMPLE_JSON_NO_LINQ_EXPRESSION
+#define SIMPLE_JSON_NO_LINQ_EXPRESSION
 
 // NOTE: uncomment the following line if you are compiling under Window Metro style application/library.
 // usually already defined in properties
@@ -67,6 +67,7 @@ using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text;
 using GitHub.Reflection;
+using System.Diagnostics;
 
 // ReSharper disable LoopCanBeConvertedToQuery
 // ReSharper disable RedundantExplicitArrayCreation
@@ -517,6 +518,7 @@ namespace GitHub
 
         private static readonly char[] EscapeTable;
         private static readonly char[] EscapeCharacters = new char[] { '"', '\\', '\b', '\f', '\n', '\r', '\t' };
+        private static readonly string EscapeCharactersString = new string(EscapeCharacters);
 
         static SimpleJson()
         {
@@ -1282,14 +1284,14 @@ namespace GitHub
                 if (propertyInfo.CanRead)
                 {
                     MethodInfo getMethod = ReflectionUtils.GetGetterMethodInfo(propertyInfo);
-                    if (getMethod.IsStatic || !getMethod.IsPublic)
+                    if (getMethod.IsStatic || !CanAdd(propertyInfo))
                         continue;
                     result[MapClrMemberNameToJsonFieldName(propertyInfo.Name)] = ReflectionUtils.GetGetMethod(propertyInfo);
                 }
             }
             foreach (FieldInfo fieldInfo in ReflectionUtils.GetFields(type))
             {
-                if (fieldInfo.IsStatic || !fieldInfo.IsPublic)
+                if (fieldInfo.IsStatic || !CanAdd(fieldInfo))
                     continue;
                 result[MapClrMemberNameToJsonFieldName(fieldInfo.Name)] = ReflectionUtils.GetGetMethod(fieldInfo);
             }
@@ -1304,18 +1306,25 @@ namespace GitHub
                 if (propertyInfo.CanWrite)
                 {
                     MethodInfo setMethod = ReflectionUtils.GetSetterMethodInfo(propertyInfo);
-                    if (setMethod.IsStatic || !setMethod.IsPublic)
+                    if (setMethod.IsStatic || !CanAdd(propertyInfo))
                         continue;
                     result[MapClrMemberNameToJsonFieldName(propertyInfo.Name)] = new KeyValuePair<Type, ReflectionUtils.SetDelegate>(propertyInfo.PropertyType, ReflectionUtils.GetSetMethod(propertyInfo));
                 }
             }
             foreach (FieldInfo fieldInfo in ReflectionUtils.GetFields(type))
             {
-                if (fieldInfo.IsInitOnly || fieldInfo.IsStatic || !fieldInfo.IsPublic)
+                if (fieldInfo.IsInitOnly || fieldInfo.IsStatic || !CanAdd(fieldInfo))
                     continue;
                 result[MapClrMemberNameToJsonFieldName(fieldInfo.Name)] = new KeyValuePair<Type, ReflectionUtils.SetDelegate>(fieldInfo.FieldType, ReflectionUtils.GetSetMethod(fieldInfo));
             }
             return result;
+        }
+
+        protected virtual bool CanAdd(MemberInfo info)
+        {
+            if (ReflectionUtils.GetAttribute(info, typeof(NotSerializedAttribute)) != null)
+                return false;
+            return true;
         }
 
         public virtual bool TrySerializeNonPrimitiveObject(object input, out object output)
@@ -1837,7 +1846,13 @@ namespace GitHub
             public static ConstructorDelegate GetConstructorByReflection(Type type, params Type[] argsType)
             {
                 ConstructorInfo constructorInfo = GetConstructorInfo(type, argsType);
-                return constructorInfo == null ? null : GetConstructorByReflection(constructorInfo);
+                // if it's a value type (i.e., struct), it won't have a default constructor, so use Activator instead
+                return constructorInfo == null ? (type.IsValueType ? GetConstructorForValueType(type) : null) : GetConstructorByReflection(constructorInfo);
+            }
+
+            static ConstructorDelegate GetConstructorForValueType(Type type)
+            {
+                return delegate (object[] args) { return Activator.CreateInstance(type); };
             }
 
 #if !SIMPLE_JSON_NO_LINQ_EXPRESSION
@@ -1864,7 +1879,8 @@ namespace GitHub
             public static ConstructorDelegate GetConstructorByExpression(Type type, params Type[] argsType)
             {
                 ConstructorInfo constructorInfo = GetConstructorInfo(type, argsType);
-                return constructorInfo == null ? null : GetConstructorByExpression(constructorInfo);
+                // if it's a value type (i.e., struct), it won't have a default constructor, so use Activator instead
+                return constructorInfo == null ? (type.IsValueType ? GetConstructorForValueType(type) : null) : GetConstructorByExpression(constructorInfo);
             }
 
 #endif
@@ -1924,6 +1940,9 @@ namespace GitHub
 #if SIMPLE_JSON_NO_LINQ_EXPRESSION
                 return GetSetMethodByReflection(propertyInfo);
 #else
+                // if it's a struct, we want to use reflection, as linq expressions modify copies of the object and not the real thing
+                if (propertyInfo.DeclaringType.IsValueType)
+                    return GetSetMethodByReflection(propertyInfo);
                 return GetSetMethodByExpression(propertyInfo);
 #endif
             }
@@ -1933,6 +1952,9 @@ namespace GitHub
 #if SIMPLE_JSON_NO_LINQ_EXPRESSION
                 return GetSetMethodByReflection(fieldInfo);
 #else
+                // if it's a struct, we want to use reflection, as linq expressions modify copies of the object and not the real thing
+                if (fieldInfo.DeclaringType.IsValueType)
+                    return GetSetMethodByReflection(fieldInfo);
                 return GetSetMethodByExpression(fieldInfo);
 #endif
             }
@@ -2119,6 +2141,12 @@ namespace GitHub
             }
 
         }
+    }
+
+    [System.AttributeUsage(System.AttributeTargets.Property |
+                       System.AttributeTargets.Field)]
+    public sealed class NotSerializedAttribute : Attribute
+    {
     }
 }
 // ReSharper restore LoopCanBeConvertedToQuery
